@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import traceback
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -281,6 +282,33 @@ def full_file_gen(instance):
     return final_text
 
 
+def repairbench(instance):
+    if len(unidiff.PatchSet(instance["patch"])) > 1 or len(unidiff.PatchSet(instance["test_patch"])) > 1:
+        return
+    premise = "You are an automatic program repair tool. Your task is to fix the provided buggy code.\n\nThe following code contains a bug:"
+    final_text = [
+        premise,
+        "```python",
+        instance["file_contents"][instance["file_names"]["source"][0]],
+        "```",
+        "\n",
+        "The code fails the following test file."
+        "```python",
+        instance["file_contents"][instance["file_names"]["test"][0]],
+        "```",
+        "\n",
+        "Fix the code and respond with the fixed code in the same format as the input code."
+    ]
+    final_text = "\n".join(final_text)
+    return final_text
+    # print(instance.keys())
+    # print(instance["patch"])
+    # print(instance["FAIL_TO_PASS"])
+    # print(instance["file_contents"].keys())
+    # print(instance["file_contents"]["astropy/modeling/tests/test_separable.py"])
+    # return ""
+
+
 def ingest_files(filenames):
     files_dict = dict()
     for filename in filenames:
@@ -290,11 +318,22 @@ def ingest_files(filenames):
     return files_dict
 
 
+def ingest_files_repairbench(filenames):
+    files_dict = dict()
+    for split in ["source", "test"]:
+        for filename in filenames[split]:
+            with open(filename) as f:
+                content = f.read()
+            files_dict[filename] = content
+    return files_dict
+
+
 PROMPT_FUNCTIONS = {
     "style-2": prompt_style_2,
     "style-3": prompt_style_3,
     "full_file_gen": full_file_gen,
     "style-2-edits-only": prompt_style_2_edits_only,
+    "repairbench": repairbench,
 }
 
 
@@ -332,6 +371,30 @@ def get_oracle_filenames(instance):
     for source_file in source_files:
         gold_docs.add(source_file)
     return gold_docs
+
+
+def get_repairbench_filenames(instance):
+    """
+    Returns the filenames that are changed in the patch, plus the name of the files containing failing tests
+    """
+    # Get source files
+    gold_files = {
+        patch_file.source_file.split("a/", 1)[-1]
+        for patch_file in unidiff.PatchSet(instance["patch"])
+    }
+
+    # Apply the test patch to the repository
+    HEREDOC_DELIMITER = "EOF_114329324912"
+    apply_test_patch_command = (
+        f"git apply -v - <<'{HEREDOC_DELIMITER}'\n{instance['test_patch']}\n{HEREDOC_DELIMITER}"
+    )
+    subprocess.run(apply_test_patch_command, shell=True, check=True, capture_output=True)
+
+    # Get test files
+    test_files = {
+        x.split("::", 1)[0] for x in json.loads(instance["FAIL_TO_PASS"])
+    }
+    return {"source": list(gold_files), "test": list(test_files)}
 
 
 def add_text_inputs(
@@ -386,6 +449,11 @@ def add_text_inputs(
                     if file_source in {"oracle"}:
                         instance["file_contents"] = ingest_files(
                             get_oracle_filenames(instance)
+                        )
+                    elif file_source in {"repairbench"}:
+                        instance["file_names"] = get_repairbench_filenames(instance)
+                        instance["file_contents"] = ingest_files_repairbench(
+                            instance["file_names"]
                         )
                     elif file_source in {"bm25"}:
                         instance["file_contents"] = ingest_files(

@@ -212,7 +212,7 @@ if __name__ == "__main__":
         "--file_source",
         type=str,
         default="oracle",
-        choices=["oracle", "bm25", "all"],
+        choices=["oracle", "bm25", "all", "repairbench"],
         help="How to select the files to use in context.",
     )
     parser.add_argument(
